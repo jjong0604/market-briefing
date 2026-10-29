@@ -16,7 +16,7 @@ jobs:
       - name: 매수 타점 계산
         run: |
           cat > screener.py <<'PYEOF'
-          import json, datetime
+          import json, datetime, time
           import pandas as pd
           import yfinance as yf
 
@@ -30,6 +30,10 @@ jobs:
            "빛과전자": ("069540.KQ", "광통신"),
           }
           BENCH = "^KS11"
+          try:
+              yf.set_tz_cache_location("/tmp/yfcache")  # 'database is locked' 방지
+          except Exception:
+              pass
 
           def screen_one(df, bench_r6):
               c, h, l, v = df["Close"], df["High"], df["Low"], df["Volume"]
@@ -72,26 +76,43 @@ jobs:
                           buy_hi=round(pivot * 1.05), stop=round(entry * 0.93), target=round(entry * 1.20),
                           volx=round(volx, 2), dist=round(dist * 100, 1))
 
-          def run():
-              codes = [v[0] for v in CAND.values()] + [BENCH]
-              data = yf.download(codes, period="2y", auto_adjust=True, group_by="ticker", progress=False)
-              b = data[BENCH].dropna()
-              bench_r6 = float(b["Close"].iloc[-1] / b["Close"].iloc[-126] - 1)
-              mkt_ok = bool(b["Close"].iloc[-1] > b["Close"].rolling(50).mean().iloc[-1]
-                            and b["Close"].rolling(50).mean().iloc[-1] > b["Close"].rolling(200).mean().iloc[-1])
-              rows = []
-              for name, (code, sec) in CAND.items():
+          def get(code):
+              for _ in range(3):
                   try:
-                      d = data[code].dropna()
-                      if len(d) < 260: continue
+                      d = yf.download(code, period="2y", auto_adjust=True, progress=False, threads=False)
+                      if isinstance(d.columns, pd.MultiIndex):
+                          d.columns = d.columns.get_level_values(0)
+                      d = d.dropna()
+                      if len(d) > 0:
+                          return d
+                  except Exception as e:
+                      print("retry", code, e)
+                  time.sleep(2)
+              return None
+
+          def run():
+              b = get(BENCH)
+              if b is not None and len(b) > 200:
+                  bench_r6 = float(b["Close"].iloc[-1] / b["Close"].iloc[-126] - 1)
+                  ma50 = b["Close"].rolling(50).mean(); ma200 = b["Close"].rolling(200).mean()
+                  mkt_ok = bool(b["Close"].iloc[-1] > ma50.iloc[-1] and ma50.iloc[-1] > ma200.iloc[-1])
+                  kospi = round(float(b["Close"].iloc[-1]), 2)
+              else:
+                  bench_r6, mkt_ok, kospi = 0.0, False, None
+              rows, failed = [], []
+              for name, (code, sec) in CAND.items():
+                  d = get(code)
+                  if d is None or len(d) < 260:
+                      failed.append(name); print("skip", name, code); continue
+                  try:
                       r = screen_one(d, bench_r6); r.update(name=name, sector=sec, code=code); rows.append(r)
                   except Exception as e:
-                      print("skip", name, e)
+                      failed.append(name); print("skip", name, e)
               order = {"buy": 0, "ready": 1, "wait": 2, "watch": 3, "late": 4, "x": 5}
               rows.sort(key=lambda r: (order[r["tone"]], -r["trend"]))
               kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-              return dict(generated=kst.strftime("%Y-%m-%d %H:%M"), market_ok=mkt_ok,
-                          kospi=round(float(b["Close"].iloc[-1]), 2), rows=rows)
+              return dict(generated=kst.strftime("%Y-%m-%d %H:%M"), market_ok=mkt_ok, kospi=kospi,
+                          failed=failed, rows=rows)
 
           INDEX_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
           <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -114,7 +135,8 @@ jobs:
           const f=n=>n.toLocaleString("ko-KR");
           fetch("data.json?"+Date.now()).then(r=>r.json()).then(d=>{
            document.getElementById("sub").textContent="한국시간 "+d.generated+" 기준 · 전 거래일 종가";
-           let h=`<div class="m">${d.market_ok?"🟢 시장 필터 통과 — 코스피 "+f(d.kospi)+"가 50일선 위, 50일선이 200일선 위":"🔴 시장 필터 미통과 — 코스피 "+f(d.kospi)+"가 추세 아래. 신규 매수는 비중을 줄이거나 쉬는 게 원칙입니다"}</div>`;
+           let h=!d.kospi?`<div class="m">⚪ 코스피 데이터를 받지 못해 시장 필터는 판단하지 않았습니다</div>`:`<div class="m">${d.market_ok?"🟢 시장 필터 통과 — 코스피 "+f(d.kospi)+"가 50일선 위, 50일선이 200일선 위":"🔴 시장 필터 미통과 — 코스피 "+f(d.kospi)+"가 추세 아래. 신규 매수는 비중을 줄이거나 쉬는 게 원칙입니다"}</div>`;
+           if(d.failed&&d.failed.length)h+=`<div class="m">⚠ 시세를 받지 못한 종목: ${d.failed.join(", ")}</div>`;
            h+=d.rows.map(r=>`<div class="c ${r.tone}"><div class="t"><b>${r.name}</b><span class="s">${r.sector} · 추세 ${r.trend}/8</span></div>
            <div class="s">${r.status}</div><div class="g"><div>현재가<b>${f(r.price)}</b></div><div>매수 트리거<b>${f(r.pivot)}</b></div><div>추격 상한<b>${f(r.buy_hi)}</b></div><div>손절<b>${f(r.stop)}</b></div></div>
            <div class="s" style="margin-top:6px">1차 목표 ${f(r.target)} · 오늘 거래량 평소의 ${r.volx}배 · 피벗 대비 ${r.dist}%</div></div>`).join("");

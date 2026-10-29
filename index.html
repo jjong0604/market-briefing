@@ -1,0 +1,28 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><title>매수 타점 브리핑</title>
+<style>
+:root{--bg:#f6f4ef;--card:#fff;--ink:#1d1d1b;--mute:#76736b;--line:#ebe8e1}
+@media(prefers-color-scheme:dark){:root{--bg:#141412;--card:#1e1e1b;--ink:#ecebe6;--mute:#9a978e;--line:#2e2d29}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:820px;margin:0 auto;padding:14px 12px 40px}h1{font-size:21px;margin:6px 4px 2px}.sub{color:var(--mute);font-size:12.5px;margin:0 4px 12px}
+.c{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--k);border-radius:12px;padding:11px 14px;margin:9px 0}
+.buy{--k:#2e9d4f}.ready{--k:#3b7dd8}.wait{--k:#e0a100}.watch{--k:#9a978e}.late{--k:#d63a3a}.x{--k:#bbb}
+.t{display:flex;justify-content:space-between;gap:8px}.s{color:var(--mute);font-size:12.5px}
+.g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px;font-size:12.5px}.g b{display:block;font-size:14px}
+.m{padding:10px 14px;border-radius:12px;margin:8px 0;font-size:14px;background:var(--card);border:1px solid var(--line)}
+footer{color:var(--mute);font-size:11.5px;margin-top:22px;line-height:1.6}
+</style></head><body><main><h1>📈 매수 타점 브리핑</h1><p class="sub" id="sub">불러오는 중…</p><div id="a"></div>
+<footer><b>적용 기법</b> 마크 미너비니의 SEPA — ① 트렌드 템플릿 8조건(150·200일선 위, 200일선 상승, 50일선 정렬, 52주 고가 -25% 이내, 저가 +30%↑, 6개월 수익률이 코스피 상회) 통과 종목만, ② 수축하는 눌림(VCP) 뒤 <b>피벗 돌파 + 거래량 평소 140%↑</b>에서 매수, ③ 피벗 +5% 넘으면 추격 금지, ④ 손절 -7%, ⑤ +20% 부근 일부 익절.<br>
+무료 시세는 지연·오차가 있습니다. 호가단위에 맞춰 조정하고 주문 전 차트를 직접 확인하세요. 개인 참고용이며 매수 권유가 아닙니다. 투자 판단과 책임은 본인에게 있습니다.</footer></main>
+<script>
+const f=n=>n.toLocaleString("ko-KR");
+fetch("data.json?"+Date.now()).then(r=>r.json()).then(d=>{
+ document.getElementById("sub").textContent="한국시간 "+d.generated+" 기준 · 전 거래일 종가";
+ let h=!d.kospi?`<div class="m">⚪ 코스피 데이터를 받지 못해 시장 필터는 판단하지 않았습니다</div>`:`<div class="m">${d.market_ok?"🟢 시장 필터 통과 — 코스피 "+f(d.kospi)+"가 50일선 위, 50일선이 200일선 위":"🔴 시장 필터 미통과 — 코스피 "+f(d.kospi)+"가 추세 아래. 신규 매수는 비중을 줄이거나 쉬는 게 원칙입니다"}</div>`;
+ if(d.failed&&d.failed.length)h+=`<div class="m">⚠ 시세를 받지 못한 종목: ${d.failed.join(", ")}</div>`;
+ h+=d.rows.map(r=>`<div class="c ${r.tone}"><div class="t"><b>${r.name}</b><span class="s">${r.sector} · 추세 ${r.trend}/8</span></div>
+ <div class="s">${r.status}</div><div class="g"><div>현재가<b>${f(r.price)}</b></div><div>매수 트리거<b>${f(r.pivot)}</b></div><div>추격 상한<b>${f(r.buy_hi)}</b></div><div>손절<b>${f(r.stop)}</b></div></div>
+ <div class="s" style="margin-top:6px">1차 목표 ${f(r.target)} · 오늘 거래량 평소의 ${r.volx}배 · 피벗 대비 ${r.dist}%</div></div>`).join("");
+ document.getElementById("a").innerHTML=h;}).catch(()=>document.getElementById("a").textContent="데이터를 불러오지 못했습니다.");
+</script></body></html>

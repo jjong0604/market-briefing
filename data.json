@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-30 18:37",
+ "generated": "2026-10-30 18:42",
  "market_ok": false,
  "kospi": 5730.74,
  "failed": [
@@ -150,7 +150,7 @@
    "buy_hi": 736050,
    "stop": 652582,
    "target": 842041,
-   "volx": 1.46,
+   "volx": 1.24,
    "dist": -39.4,
    "name": "HD현대일렉트릭",
    "sector": "전력",

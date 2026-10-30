@@ -1,7 +1,8 @@
 name: daily-briefing
 on:
   schedule:
-    - cron: "0 22 * * 0-4"      # 한국시간 월~금 오전 7시 — 일봉 계산
+    - cron: "0 22 * * 0-4"      # 한국시간 월~금 07:00 — 일봉 계산(매수 타점)
+    - cron: "30 22 * * 0-4"     # 한국시간 월~금 07:30 — 간밤 미국 시장 브리핑
     - cron: "*/10 0-6 * * 1-5"  # 한국시간 월~금 09:00~15:59 — 현재가 갱신
   workflow_dispatch:
 permissions:
@@ -16,10 +17,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
+      - run: pip install yfinance pandas
       - name: 일봉 계산 (진입·손절·익절 가격)
         if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 22 * * 0-4'
+        continue-on-error: true
         run: |
-          pip install yfinance pandas
           cat > screener.py <<'PYEOF'
           import json, datetime, time
           import pandas as pd
@@ -137,7 +139,7 @@ jobs:
           .now{background:#0B1B33;color:#fff}.now em{color:#D0D5DD}.now i{background:#fff!important;border-color:#0B1B33}
           .ft{display:flex;justify-content:space-between;font-size:12px;color:#475467;padding-top:4px;border-top:1px solid #EAECF0}
           footer{color:#475467;font-size:11.5px;line-height:1.6;margin-top:8px}
-          </style></head><body><main><h1>가격 사다리</h1><div class="s" id="sub">불러오는 중…</div><div id="a"></div>
+          </style></head><body><main><h1>가격 사다리</h1><div class="s"><a href="us.html">🇺🇸 간밤 미국 시장 브리핑 보기 →</a></div><div class="s" id="sub">불러오는 중…</div><div id="a"></div>
           <footer><b>적용 기법</b> 마크 미너비니 SEPA — 트렌드 템플릿 8조건을 모두 통과한 종목만, 수축하는 눌림 뒤 <b>피벗 돌파 + 거래량 평소 1.4배↑</b>에서 매수, 피벗 +5% 초과는 추격 금지, 손절 -7%, +20% 부근 일부 익절. 익절·추격선·손절은 모두 진입 트리거 기준 비율입니다.<br>
           현재가는 키움 REST API로 장중 약 10분마다 갱신되며 몇 분 늦을 수 있습니다. 일봉 지표는 무료 시세라 오차가 있을 수 있으니 주문 전 차트를 직접 확인하세요. 개인 참고용이며 매수 권유가 아닙니다. 투자 판단과 책임은 본인에게 있습니다.</footer></main>
           <script>
@@ -177,6 +179,151 @@ jobs:
               open("index.html", "w", encoding="utf-8").write(INDEX_HTML)
           PYEOF
           python screener.py
+      - name: 간밤 미국 시장 브리핑
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 22 * * 0-4'
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cat > us_briefing.py <<'PYEOF'
+          import json, os, time, datetime, urllib.request
+          import pandas as pd
+          import yfinance as yf
+          try:
+              yf.set_tz_cache_location("/tmp/yfcache")
+          except Exception:
+              pass
+
+          IDX = [("🇰🇷 코스피","^KS11",2),("🇰🇷 코스닥","^KQ11",2),("🇰🇷 원/달러","KRW=X",2),("필라델피아 반도체","^SOX",2),
+           ("나스닥 100","^NDX",2),("나스닥 종합","^IXIC",2),("S&P 500","^GSPC",2),("다우존스","^DJI",2),("러셀2000","^RUT",2),
+           ("VIX","^VIX",2),("미 10년물 금리(%)","^TNX",3),("SK하이닉스 ADR","SKHY",2),("메타","META",2),("WTI 원유","CL=F",2)]
+          SEC = [("전력 인프라",["VRT","PWR","ETN","GEV","NEE"],"전력설비·변압기·전선"),("반도체",["SKHY","MU","ARM","AVGO","NVDA","TER"],"반도체(HBM·장비)"),
+           ("광통신",["LITE","GLW","COHR","ANET"],"광통신 부품"),("수소",["BE","PLUG","FCEL"],"수소연료전지"),
+           ("AI SW",["ORCL","IREN","MSFT","AAPL","PLTR","META"],"AI 플랫폼·SW"),("원전 대형",["CCJ"],"원자력발전(대형)"),
+           ("조선·해운",["FRO","SBLK"],"조선·해운"),("로봇",["KITT","SERV","SYM","ISRG","ARBE"],"지능형로봇"),
+           ("바이오",["AMGN","LLY","NVO"],"제약·바이오"),("방산",["LHX","HII"],"방위산업"),
+           ("우주항공",["RDW","RKLB","LUNR","PL"],"우주항공·위성"),("스테이블코인",["PYPL","COIN","CRCL","HOOD"],"전자결제·가상자산"),
+           ("원전 SMR",["SMR","OKLO"],"SMR"),("2차전지",["QS","TSLA","ALB"],"2차전지"),("양자",["QUBT","RGTI","IONQ","QBTS"],"양자컴퓨터"),
+           ("사이버보안",["CRWD","DDOG","PANW","FTNT"],"정보보안"),("태양광",["FSLR","ENPH"],"태양광에너지")]
+
+          def get(code):
+              for _ in range(3):
+                  try:
+                      d = yf.download(code, period="10d", auto_adjust=True, progress=False, threads=False)
+                      if isinstance(d.columns, pd.MultiIndex):
+                          d.columns = d.columns.get_level_values(0)
+                      c = d["Close"].dropna()
+                      if len(c) >= 2:
+                          return float(c.iloc[-1]), float(c.iloc[-2]), c.index[-1].strftime("%m/%d")
+                  except Exception as e:
+                      print("retry", code, e)
+                  time.sleep(2)
+              return None
+
+          AH_LIST = ["GOOGL","AMZN","MSFT","META","AAPL","NVDA","TSLA","INTC","SNDK","MU","AVGO","AMD","ORCL","COIN"]
+
+          def ah_change(code):
+              for _ in range(2):
+                  try:
+                      d = yf.download(code, period="2d", interval="5m", prepost=True, auto_adjust=False, progress=False, threads=False)
+                      if isinstance(d.columns, pd.MultiIndex):
+                          d.columns = d.columns.get_level_values(0)
+                      c = d["Close"].dropna()
+                      ix = c.index.tz_convert("America/New_York")
+                      day = ix[-1].date()
+                      reg = c[(ix.date == day) & (ix.hour < 16)]
+                      post = c[(ix.date == day) & (ix.hour >= 16)]
+                      if len(reg) and len(post):
+                          return {"t": code, "close": round(float(reg.iloc[-1]), 2), "ah": round(float(post.iloc[-1]), 2),
+                                  "pct": round((float(post.iloc[-1]) / float(reg.iloc[-1]) - 1) * 100, 2),
+                                  "time": post.index.tz_convert("Asia/Seoul")[-1].strftime("%H:%M")}
+                      return None
+                  except Exception as e:
+                      print("ah retry", code, e)
+                  time.sleep(2)
+              return None
+
+          def ai_cards(payload):
+              key = os.environ.get("ANTHROPIC_API_KEY")
+              if not key:
+                  return []
+              prompt = ("한국 투자자가 장 시작 전에 읽을 '간밤 미국 시장 브리핑' 해설 카드를 만드세요. 아래는 직전 거래일 종가 수치입니다. "
+                        "웹 검색으로 간밤 주요 실적·FOMC·이벤트와 수치 변동의 원인을 확인하고, 확인된 사실만 쓰세요. 추측이나 지어낸 수치는 금지. "
+                        "출력은 JSON 배열만(설명·코드블록 금지): [{\"tone\":\"green|red|purple|amber|blue\",\"title\":\"제목\",\"body\":\"2~3문장\"}] 4~6개. "
+                        "카드 주제: 간밤 핵심 요약, 오늘 한국장 최대 변수, 한국 연동 업종 영향, 장중 체크포인트. 한국어.\n\n"
+                        + json.dumps(payload, ensure_ascii=False))
+              body = {"model": "claude-sonnet-5-5", "max_tokens": 3000,
+                      "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 6}],
+                      "messages": [{"role": "user", "content": prompt}]}
+              req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
+                  headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+              try:
+                  r = json.load(urllib.request.urlopen(req, timeout=240))
+                  txt = "".join(b.get("text", "") for b in r["content"] if b.get("type") == "text")
+                  return json.loads(txt[txt.index("["):txt.rindex("]") + 1])
+              except Exception as e:
+                  print("AI 해설 실패:", e)
+                  return []
+
+          def main():
+              out = {"indices": [], "sectors": [], "ah": []}
+              for name, code, dec in IDX:
+                  r = get(code)
+                  if r:
+                      row = {"name": name, "value": round(r[0], dec), "pct": round((r[0]/r[1]-1)*100, 2), "asof": r[2]}
+                      if code == "^TNX":
+                          row["pct"] = None; row["bp"] = round((r[0]-r[1])*100, 1)
+                      out["indices"].append(row)
+              for name, ts, kr in SEC:
+                  ms = []
+                  for t in ts:
+                      r = get(t)
+                      if r: ms.append({"t": t, "pct": round((r[0]/r[1]-1)*100, 2)})
+                  if ms:
+                      ms.sort(key=lambda m: -m["pct"])
+                      out["sectors"].append({"name": name, "kr": kr, "members": ms, "pct": round(sum(m["pct"] for m in ms)/len(ms), 2)})
+              out["sectors"].sort(key=lambda s: -s["pct"])
+              out["ah"] = sorted([r for r in (ah_change(t) for t in AH_LIST) if r], key=lambda r: -abs(r["pct"]))
+              kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+              out["generated"] = kst.strftime("%Y-%m-%d %H:%M")
+              out["cards"] = ai_cards({"after_hours": out["ah"], "indices": out["indices"], "sectors": [{"name": s["name"], "pct": s["pct"], "members": s["members"]} for s in out["sectors"]]})
+              open("us.html", "w", encoding="utf-8").write(PAGE.replace("__DATA__", json.dumps(out, ensure_ascii=False)))
+              print("us.html 생성:", len(out["indices"]), "지수,", len(out["sectors"]), "섹터,", len(out["cards"]), "해설")
+
+          PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>미국 시장 브리핑</title>
+          <style>
+          :root{--bg:#f6f4ef;--card:#fff;--ink:#1d1d1b;--mute:#76736b;--line:#ebe8e1;--up:#0a7a2f;--dn:#c4161c;--upbg:#eef7e8;--dnbg:#fbeeee}
+          @media(prefers-color-scheme:dark){:root{--bg:#141412;--card:#1e1e1b;--ink:#ecebe6;--mute:#9a978e;--line:#2e2d29;--up:#4cc26f;--dn:#ff7070;--upbg:#172a1b;--dnbg:#301b1b}}
+          *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+          main{max-width:880px;margin:0 auto;padding:14px 12px 36px}h1{font-size:22px;margin:6px 4px 2px}.sub{color:var(--mute);font-size:12.5px;margin:0 4px}a{color:inherit}
+          h2{font-size:13.5px;color:var(--mute);margin:22px 4px 8px;font-weight:600}.box{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+          .row{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line)}.row:last-child{border:0}.n{flex:1;min-width:0}.v{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+          .s{display:block;color:var(--mute);font-size:11.5px;line-height:1.45}.rk{width:18px;color:var(--mute);font-size:12px}.up{color:var(--up)}.dn{color:var(--dn)}.top{background:var(--upbg)}.bot{background:var(--dnbg)}
+          .card{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--c);border-radius:12px;padding:12px 14px;margin:10px 0}.card b{display:block;margin-bottom:4px}.card p{margin:3px 0;font-size:14px}
+          .green{--c:#2e9d4f}.red{--c:#d63a3a}.purple{--c:#7a5cc7}.amber{--c:#e0a100}.blue{--c:#3b7dd8}footer{color:var(--mute);font-size:11.5px;text-align:center;margin-top:26px}
+          </style></head><body><main><h1>🇺🇸 미국 시장 브리핑</h1><p class="sub" id="sub"></p><p class="sub"><a href="index.html">← 가격 사다리(매수 타점) 보기</a></p><div id="a"></div>
+          <footer>무료 시세 기준(지연·오차 가능). 개인 참고용이며 매수 권유가 아닙니다. 투자 판단과 책임은 본인에게 있습니다.</footer></main>
+          <script>
+          const D=__DATA__;
+          const esc=s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+          const cls=p=>p>0?"up":p<0?"dn":"";const f=v=>v.toLocaleString("ko-KR",{maximumFractionDigits:3});
+          const pc=p=>(p>0?"▲ +":p<0?"▼ ":"")+p.toFixed(2)+"%";
+          document.getElementById("sub").textContent="한국시간 "+D.generated+" 생성 · 각 항목의 직전 거래일 종가";
+          let h=D.ah&&D.ah.length?'<h2>🌙 애프터마켓 (정규장 마감 대비 · 마지막 체결 한국시간 '+D.ah[0].time+')</h2><div class="box">'+D.ah.map(r=>`<div class="row"><div class="n"><b>${r.t}</b><span class="s">정규장 ${f(r.close)} → 시간외 ${f(r.ah)}</span></div><div class="v ${cls(r.pct)}" style="min-width:84px">${pc(r.pct)}</div></div>`).join("")+'</div><p class="sub">거래가 얇은 시간외 가격이라 실제와 다를 수 있습니다. 실적 발표 종목은 해설 카드를 참고하세요.</p>':"";
+          h+='<h2>📊 지수 · 환율</h2><div class="box">'+D.indices.map(i=>{
+           const ch=i.pct===null?(i.bp>0?"▲ +":"▼ ")+Math.abs(i.bp)+"bp":pc(i.pct);const c=i.pct===null?cls(i.bp):cls(i.pct);
+           return `<div class="row"><div class="n"><b>${esc(i.name)}</b><span class="s">${i.asof}</span></div><div class="v">${f(i.value)}</div><div class="v ${c}" style="min-width:84px">${ch}</div></div>`}).join("")+"</div>";
+          const n=D.sectors.length;
+          h+=`<h2>🏆 섹터 등락 순위 — ${n}개 (종목 단순평균)</h2><div class="box">`+D.sectors.map((s,k)=>`<div class="row ${k<3?"top":k>=n-3?"bot":""}"><span class="rk">${k+1}</span><div class="n"><b>${esc(s.name)}</b><span class="s">${s.members.map(m=>m.t+" "+(m.pct>0?"+":"")+m.pct.toFixed(2)).join(" · ")}</span><span class="s">🇰🇷 ${esc(s.kr)}</span></div><div class="v ${cls(s.pct)}"><b>${s.pct>0?"+":""}${s.pct.toFixed(2)}%</b></div></div>`).join("")+"</div>";
+          h+=(D.cards.length?"<h2>📝 해설</h2>":"")+D.cards.map(c=>`<div class="card ${esc(c.tone||"blue")}"><b>${esc(c.title)}</b><p>${esc(c.body)}</p></div>`).join("");
+          document.getElementById("a").innerHTML=h;
+          </script></body></html>"""
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
+          python us_briefing.py
       - name: 현재가 갱신 (키움 REST API)
         if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/10 0-6 * * 1-5'
         continue-on-error: true
@@ -230,5 +377,5 @@ jobs:
         run: |
           git config user.name "briefing-bot"
           git config user.email "bot@users.noreply.github.com"
-          for f in index.html data.json live.json; do [ -f "$f" ] && git add "$f"; done
+          for f in index.html data.json live.json us.html; do [ -f "$f" ] && git add "$f"; done
           git diff --staged --quiet || (git commit -m "update" && git pull --rebase origin main && git push)

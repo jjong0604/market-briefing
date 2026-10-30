@@ -338,11 +338,16 @@ jobs:
 
           def post(path, body, headers):
               req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(), headers=headers, method="POST")
-              with urllib.request.urlopen(req, timeout=20) as r:
-                  return json.load(r)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      return json.load(r)
+              except urllib.error.HTTPError as e:
+                  print("키움 응답 오류:", path, "HTTP", e.code, e.read().decode("utf-8", "ignore")[:400])
+                  raise SystemExit(1)
 
           def main():
-              key, sec = os.environ.get("KIWOOM_APP_KEY"), os.environ.get("KIWOOM_APP_SECRET")
+              key, sec = (os.environ.get("KIWOOM_APP_KEY") or "").strip(), (os.environ.get("KIWOOM_APP_SECRET") or "").strip()
+              print("키 길이(글자 수):", len(key), len(sec))
               if not key or not sec:
                   print("KIWOOM 키가 등록되지 않았습니다 — 현재가 갱신을 건너뜁니다"); return
               j = post("/oauth2/token", {"grant_type": "client_credentials", "appkey": key, "secretkey": sec}, JH)

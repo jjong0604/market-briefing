@@ -141,7 +141,7 @@ jobs:
           footer{color:#475467;font-size:11.5px;line-height:1.6;margin-top:8px}
           </style></head><body><main><h1>가격 사다리</h1><div class="s"><a href="us.html">🇺🇸 간밤 미국 시장 브리핑 보기 →</a></div><div class="s" id="sub">불러오는 중…</div><div id="a"></div>
           <footer><b>적용 기법</b> 마크 미너비니 SEPA — 트렌드 템플릿 8조건을 모두 통과한 종목만, 수축하는 눌림 뒤 <b>피벗 돌파 + 거래량 평소 1.4배↑</b>에서 매수, 피벗 +5% 초과는 추격 금지, 손절 -7%, +20% 부근 일부 익절. 익절·추격선·손절은 모두 진입 트리거 기준 비율입니다.<br>
-          현재가는 키움 REST API로 장중 약 10분마다 갱신되며 몇 분 늦을 수 있습니다. 일봉 지표는 무료 시세라 오차가 있을 수 있으니 주문 전 차트를 직접 확인하세요. 개인 참고용이며 매수 권유가 아닙니다. 투자 판단과 책임은 본인에게 있습니다.</footer></main>
+          현재가는 야후 무료 시세로 장중 약 10분마다 갱신되며 15~20분 지연될 수 있고, GitHub 사정으로 갱신이 건너뛰어질 수도 있습니다. 일봉 지표는 무료 시세라 오차가 있을 수 있으니 주문 전 차트를 직접 확인하세요. 개인 참고용이며 매수 권유가 아닙니다. 투자 판단과 책임은 본인에게 있습니다.</footer></main>
           <script>
           const f=n=>Math.round(n).toLocaleString("ko-KR");
           const COL={tgt:"#12B76A",hi:"#F79009",trg:"#2E90FA",stp:"#D92D20"};
@@ -324,53 +324,45 @@ jobs:
               main()
           PYEOF
           python us_briefing.py
-      - name: 현재가 갱신 (키움 REST API)
+      - name: 현재가 갱신 (야후 시세, 15~20분 지연)
         if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/10 0-6 * * 1-5'
         continue-on-error: true
-        env:
-          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
-          KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
         run: |
           cat > live.py <<'PYEOF'
-          import json, os, time, datetime, urllib.request, urllib.error
-          BASE = "https://api.kiwoom.com"
-          JH = {"Content-Type": "application/json;charset=UTF-8"}
+          import json, time, datetime
+          import pandas as pd
+          import yfinance as yf
+          try:
+              yf.set_tz_cache_location("/tmp/yfcache")
+          except Exception:
+              pass
 
-          def post(path, body, headers):
-              req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(), headers=headers, method="POST")
-              try:
-                  with urllib.request.urlopen(req, timeout=20) as r:
-                      return json.load(r)
-              except urllib.error.HTTPError as e:
-                  print("키움 응답 오류:", path, "HTTP", e.code, e.read().decode("utf-8", "ignore")[:400])
-                  raise SystemExit(1)
+          def last_price(code):
+              for _ in range(2):
+                  try:
+                      d = yf.download(code, period="1d", interval="5m", auto_adjust=False, progress=False, threads=False)
+                      if isinstance(d.columns, pd.MultiIndex):
+                          d.columns = d.columns.get_level_values(0)
+                      c = d["Close"].dropna()
+                      if len(c):
+                          return float(c.iloc[-1])
+                  except Exception as e:
+                      print("retry", code, e)
+                  time.sleep(1.5)
+              return None
 
           def main():
-              key, sec = (os.environ.get("KIWOOM_APP_KEY") or "").strip(), (os.environ.get("KIWOOM_APP_SECRET") or "").strip()
-              print("키 길이(글자 수):", len(key), len(sec))
-              if not key or not sec:
-                  print("KIWOOM 키가 등록되지 않았습니다 — 현재가 갱신을 건너뜁니다"); return
-              j = post("/oauth2/token", {"grant_type": "client_credentials", "appkey": key, "secretkey": sec}, JH)
-              tok = j.get("token")
-              if not tok:
-                  print("토큰 발급 실패:", j.get("return_code"), j.get("return_msg")); raise SystemExit(1)
               rows = json.load(open("data.json", encoding="utf-8"))["rows"]
               prices = {}
               for r in rows:
-                  code = r["code"].split(".")[0]
-                  try:
-                      j = post("/api/dostk/stkinfo", {"stk_cd": code},
-                               {**JH, "authorization": "Bearer " + tok, "api-id": "ka10001"})
-                      cur = str(j.get("cur_prc", "")).replace(",", "").lstrip("+-")
-                      if cur.isdigit():
-                          prices[r["name"]] = {"price": int(cur), "chg": j.get("flu_rt")}
-                      else:
-                          print("현재가 없음:", r["name"], j.get("return_code"), j.get("return_msg"))
-                  except Exception as e:
-                      print("실패:", r["name"], e)
-                  time.sleep(0.4)
+                  p = last_price(r["code"])
+                  if p:
+                      prices[r["name"]] = {"price": int(round(p))}
+                  else:
+                      print("현재가 없음:", r["name"], r["code"])
+                  time.sleep(0.5)
               kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-              json.dump({"updated": kst.strftime("%Y-%m-%d %H:%M"), "prices": prices},
+              json.dump({"updated": kst.strftime("%Y-%m-%d %H:%M"), "source": "yahoo", "prices": prices},
                         open("live.json", "w", encoding="utf-8"), ensure_ascii=False)
               print("갱신 완료:", len(prices), "종목")
 
